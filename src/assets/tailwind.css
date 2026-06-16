@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+/************************
+ Dark theme + accent
+*************************/
+.btn {
+  @apply px-3 py-2 rounded-md text-white hover:opacity-90 transition;
+  background-color: #FF6B35;
+}
+.input {
+  @apply bg-neutral-900 text-neutral-100 border border-neutral-700 rounded px-2 py-1 outline-none focus:ring-2;
+  --tw-ring-color: #FF6B35;
+}
+.card {
+  @apply bg-neutral-900 border border-neutral-800 rounded-lg p-4;
+}
+.sidebar {
+  @apply w-64 min-h-screen bg-neutral-950 border-r border-neutral-800 p-4;
+}
+.link {
+  @apply text-neutral-300 hover:underline;
+  text-decoration-color: #FF6B35;
+}
+

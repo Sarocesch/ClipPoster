@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#0a0a0a"/>
+  <g fill="#FF6B35">
+    <path d="M40 196h176v16H40z"/>
+    <rect x="56" y="56" width="144" height="112" rx="8" ry="8" fill="none" stroke="#FF6B35" stroke-width="8"/>
+    <path d="M88 88h80v16H88zM88 116h80v16H88zM88 144h56v16H88z"/>
+  </g>
+  <text x="128" y="234" font-size="20" text-anchor="middle" fill="#e5e5e5">ClipPoster</text>
+</svg>
+
