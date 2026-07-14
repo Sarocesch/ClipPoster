@@ -326,6 +326,9 @@ struct SchedulePayload {
     youtube_url:  Option<String>,
     #[serde(default)]
     post_now:     bool,
+    /// Compliant TikTok Direct Post settings from the "Post to TikTok" screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tiktok_options: Option<serde_json::Value>,
 }
 
 /// Splits a combined caption+hashtag string for YouTube Shorts:
@@ -355,6 +358,7 @@ async fn schedule_clip(
     api_key:      String,
     youtube_url:  Option<String>,
     post_now:     Option<bool>,
+    tiktok_options: Option<serde_json::Value>,
 ) -> Result<String, String> {
     // Use dedicated upload URL if set, otherwise fall back to server_url
     let effective_url = upload_url
@@ -376,6 +380,7 @@ async fn schedule_clip(
         api_key,
         youtube_url,
         post_now: post_now.unwrap_or(false),
+        tiktok_options,
     }).map_err(|e| e.to_string())?;
 
     let video_bytes = tokio::fs::read(&clip_path).await

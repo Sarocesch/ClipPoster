@@ -375,6 +375,120 @@ function resetScheduleStatus() {
   scheduleStatus.value = { youtube: 'idle', tiktok: 'idle', instagram: 'idle', pinterest: 'idle', snapchat: 'idle', tiktok_draft: 'idle' };
 }
 
+// ─── Compliant "Post to TikTok" modal (TikTok Direct Post UX guidelines) ────────
+const ttModalOpen    = ref(false);
+const ttMode         = ref<'schedule' | 'now'>('now');
+const ttLoading      = ref(false);
+const ttError        = ref('');
+const ttCreator      = ref<any>(null);
+const ttPrivacy      = ref('');            // must be picked — NO default (guideline)
+const ttAllowComment = ref(false);
+const ttAllowDuet    = ref(false);
+const ttAllowStitch  = ref(false);
+const ttCommercial   = ref(false);
+const ttYourBrand    = ref(false);
+const ttBranded      = ref(false);
+
+const ttClipSrc = computed(() => selectedClip.value ? convertFileSrc(selectedClip.value.rel_path) : '');
+
+const ttPrivacyLabels: Record<string, string> = {
+  PUBLIC_TO_EVERYONE:    'Everyone',
+  MUTUAL_FOLLOW_FRIENDS: 'Friends',
+  FOLLOWER_OF_CREATOR:   'Followers',
+  SELF_ONLY:             'Only me',
+};
+
+// Branded content can't be posted privately → drop SELF_ONLY when branded is on
+const ttPrivacyOptions = computed<string[]>(() => {
+  const opts: string[] = ttCreator.value?.privacy_level_options || [];
+  return ttBranded.value ? opts.filter(o => o !== 'SELF_ONLY') : opts;
+});
+
+const ttCanPost = computed(() => {
+  if (!ttPrivacy.value) return false;
+  if (ttCommercial.value && !ttYourBrand.value && !ttBranded.value) return false;
+  return true;
+});
+
+async function openTikTokPostModal(mode: 'schedule' | 'now') {
+  if (!selectedClip.value) { showToast('Kein Clip ausgewählt'); return; }
+  if (mode === 'schedule' && !scheduledAt.value) { showToast('Kein Upload-Termin gesetzt'); return; }
+  ttMode.value = mode;
+  ttError.value = '';
+  ttCreator.value = null;
+  ttPrivacy.value = '';
+  ttAllowComment.value = false; ttAllowDuet.value = false; ttAllowStitch.value = false;
+  ttCommercial.value = false; ttYourBrand.value = false; ttBranded.value = false;
+  ttModalOpen.value = true;
+  ttLoading.value = true;
+  try {
+    const { getStore } = await import('../store');
+    const store = await getStore();
+    const serverUrl = (await store.get<string>('scheduler.server_url')) || '';
+    if (!serverUrl) { ttError.value = 'VPS-Server-URL fehlt (Einstellungen).'; ttLoading.value = false; return; }
+    const res = await fetch(`${serverUrl}/api/tiktok/creator-info`);
+    const data = await res.json();
+    if (!data.ok) { ttError.value = data.error || 'TikTok nicht verbunden — bitte in Einstellungen verbinden.'; ttLoading.value = false; return; }
+    ttCreator.value = data.data;
+  } catch (e) {
+    ttError.value = 'Server nicht erreichbar: ' + String(e);
+  } finally {
+    ttLoading.value = false;
+  }
+}
+
+async function confirmTikTokPost() {
+  if (!ttCanPost.value || !selectedClip.value) return;
+  const { getStore } = await import('../store');
+  const store = await getStore();
+  const serverUrl = (await store.get<string>('scheduler.server_url')) || '';
+  const uploadUrl = (await store.get<string>('scheduler.upload_url')) || '';
+  const apiKey    = (await store.get<string>('scheduler.api_key')) || '';
+
+  const tiktokOptions = {
+    privacy_level:   ttPrivacy.value,
+    disable_comment: !ttAllowComment.value,
+    disable_duet:    !ttAllowDuet.value,
+    disable_stitch:  !ttAllowStitch.value,
+    brand_organic:   ttCommercial.value && ttYourBrand.value,
+    branded_content: ttCommercial.value && ttBranded.value,
+  };
+
+  const now = ttMode.value === 'now';
+  isScheduling.value = true;
+  scheduleStatus.value.tiktok = 'uploading';
+  try {
+    const scheduledIso = now
+      ? new Date(Date.now() + 60 * 1000).toISOString()
+      : new Date(scheduledAt.value).toISOString();
+    const resultRaw = await invoke<string>('schedule_clip', {
+      clipPath:      selectedClip.value.rel_path,
+      platform:      'tiktok',
+      description:   description.value,
+      scheduledAt:   scheduledIso,
+      serverUrl,
+      uploadUrl:     uploadUrl || null,
+      apiKey,
+      youtubeUrl:    null,
+      postNow:       now,
+      tiktokOptions,
+    });
+    scheduleStatus.value.tiktok = 'done';
+    showToast(now ? '✓ TikTok wird gepostet' : '✓ TikTok geplant');
+    ttModalOpen.value = false;
+    if (selectedClip.value) { selectedClip.value.done_tt = true; }
+    try {
+      const jobId = JSON.parse(resultRaw)?.job_id;
+      if (jobId) pollJobStatus(jobId, serverUrl, 'tiktok');
+    } catch { /* ignore */ }
+  } catch (e) {
+    scheduleStatus.value.tiktok = 'idle';
+    showToast('Fehler: ' + String(e));
+  } finally {
+    isScheduling.value = false;
+  }
+}
+
 async function scheduleForPlatform(platform: 'youtube' | 'tiktok' | 'instagram' | 'pinterest' | 'snapchat' | 'tiktok_draft') {
   if (!selectedClip.value) { showToast('Kein Clip ausgewählt'); return; }
   if (!scheduledAt.value) { showToast('Kein Upload-Termin gesetzt'); return; }
@@ -1314,6 +1428,18 @@ onUnmounted(async () => {
               <span v-if="!scheduledAt" class="text-xs text-gray-600 self-center">← Upload-Termin setzen</span>
             </div>
 
+            <!-- Compliant "Post to TikTok" — Direct Post UX guidelines (creator_info + privacy + consent) -->
+            <div class="flex flex-wrap gap-2 items-center pt-1">
+              <button @click="openTikTokPostModal('now')" :disabled="isScheduling || !selectedClip"
+                class="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 border border-primary/40 text-primary rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                ♪ Post to TikTok
+              </button>
+              <button @click="openTikTokPostModal('schedule')" :disabled="isScheduling || !selectedClip || !scheduledAt"
+                class="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/15 text-gray-300 rounded-lg text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                🗓 Schedule TikTok
+              </button>
+            </div>
+
             <!-- Demo/Test: Sofort posten (für TikTok App-Review) — kein Termin nötig -->
             <div class="flex flex-wrap gap-2 items-center pt-1">
               <span class="text-xs text-gray-600">⚡ Sofort (Test):</span>
@@ -1614,6 +1740,92 @@ onUnmounted(async () => {
             class="text-red-400 hover:text-white flex-shrink-0 leading-none text-base font-bold">✕</button>
         </div>
       </TransitionGroup>
+    </div>
+
+    <!-- ── Compliant "Post to TikTok" modal (TikTok Direct Post UX guidelines) ── -->
+    <div v-if="ttModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" @click.self="ttModalOpen = false">
+      <div class="bg-dark-900 border border-white/10 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-semibold text-gray-100">♪ Post to TikTok</h2>
+          <button @click="ttModalOpen = false" class="text-gray-500 hover:text-gray-200 text-lg leading-none">✕</button>
+        </div>
+
+        <div v-if="ttLoading" class="text-sm text-gray-400 py-10 text-center">Lade TikTok-Konto-Infos…</div>
+        <div v-else-if="ttError" class="text-sm text-red-400 py-4 bg-red-950/40 border border-red-800/40 rounded-lg px-3">{{ ttError }}</div>
+
+        <template v-else-if="ttCreator">
+          <!-- Creator info (required: which account) -->
+          <div class="flex items-center gap-3">
+            <img v-if="ttCreator.creator_avatar_url" :src="ttCreator.creator_avatar_url" class="w-9 h-9 rounded-full border border-white/15" />
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-gray-500">Posting to</div>
+              <div class="text-sm font-semibold text-gray-100">{{ ttCreator.creator_nickname }}</div>
+            </div>
+          </div>
+
+          <!-- Video preview (required: content preview) -->
+          <div v-if="ttClipSrc" class="rounded-xl overflow-hidden border border-white/10 bg-black">
+            <video :src="ttClipSrc" controls class="w-full max-h-56" />
+          </div>
+
+          <!-- Caption -->
+          <div>
+            <label class="text-[11px] uppercase tracking-wide text-gray-500">Caption</label>
+            <div class="text-sm text-gray-200 bg-dark-950/60 border border-white/10 rounded-lg px-3 py-2 whitespace-pre-wrap max-h-24 overflow-y-auto mt-1">{{ description || '—' }}</div>
+          </div>
+
+          <!-- Privacy — user must pick, NO default value -->
+          <div>
+            <label class="text-[11px] uppercase tracking-wide text-gray-500">Who can view this video <span class="text-red-400">*</span></label>
+            <select v-model="ttPrivacy" class="w-full mt-1 bg-dark-950/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-primary/50">
+              <option value="" disabled>Select…</option>
+              <option v-for="o in ttPrivacyOptions" :key="o" :value="o">{{ ttPrivacyLabels[o] || o }}</option>
+            </select>
+          </div>
+
+          <!-- Interaction toggles — unchecked by default; greyed out if the account restricts them -->
+          <div class="space-y-1.5">
+            <label class="text-[11px] uppercase tracking-wide text-gray-500">Allow users to</label>
+            <label class="flex items-center gap-2 text-sm" :class="ttCreator.comment_disabled ? 'text-gray-600 cursor-not-allowed' : 'text-gray-200'">
+              <input type="checkbox" v-model="ttAllowComment" :disabled="ttCreator.comment_disabled" /> Comment
+            </label>
+            <label class="flex items-center gap-2 text-sm" :class="ttCreator.duet_disabled ? 'text-gray-600 cursor-not-allowed' : 'text-gray-200'">
+              <input type="checkbox" v-model="ttAllowDuet" :disabled="ttCreator.duet_disabled" /> Duet
+            </label>
+            <label class="flex items-center gap-2 text-sm" :class="ttCreator.stitch_disabled ? 'text-gray-600 cursor-not-allowed' : 'text-gray-200'">
+              <input type="checkbox" v-model="ttAllowStitch" :disabled="ttCreator.stitch_disabled" /> Stitch
+            </label>
+          </div>
+
+          <!-- Commercial content disclosure — off by default -->
+          <div class="border-t border-white/10 pt-3 space-y-2">
+            <label class="flex items-center justify-between text-sm text-gray-200">
+              <span>Disclose video content</span>
+              <input type="checkbox" v-model="ttCommercial" />
+            </label>
+            <p class="text-[11px] text-gray-500 leading-snug">Turn on to disclose that this video promotes a brand, product or service.</p>
+            <div v-if="ttCommercial" class="space-y-1.5 pl-1 pt-1">
+              <label class="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" v-model="ttYourBrand" /> Your Brand</label>
+              <label class="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" v-model="ttBranded" /> Branded Content</label>
+              <p v-if="!ttYourBrand && !ttBranded" class="text-[11px] text-amber-400">Select at least one.</p>
+              <p v-if="ttBranded" class="text-[11px] text-gray-500">Branded content can't be private.</p>
+            </div>
+          </div>
+
+          <!-- Consent (required) -->
+          <p class="text-[11px] text-gray-500 leading-snug">
+            By posting, you agree to TikTok's
+            <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" class="text-primary underline">Music Usage Confirmation</a><template v-if="ttBranded"> and <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" class="text-primary underline">Branded Content Policy</a></template>.
+          </p>
+
+          <!-- Post — disabled until privacy chosen + valid disclosure -->
+          <button @click="confirmTikTokPost" :disabled="!ttCanPost || isScheduling"
+            class="w-full py-2.5 rounded-xl text-sm font-semibold transition-colors"
+            :class="ttCanPost && !isScheduling ? 'bg-primary text-white hover:bg-primary/80' : 'bg-white/10 text-gray-500 cursor-not-allowed'">
+            {{ isScheduling ? 'Wird gepostet…' : (ttMode === 'now' ? 'Post to TikTok' : 'Schedule TikTok post') }}
+          </button>
+        </template>
+      </div>
     </div>
   </div>
 </template>
