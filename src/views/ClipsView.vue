@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -402,6 +402,20 @@ const ttPrivacyLabels: Record<string, string> = {
 const ttPrivacyOptions = computed<string[]>(() => {
   const opts: string[] = ttCreator.value?.privacy_level_options || [];
   return ttBranded.value ? opts.filter(o => o !== 'SELF_ONLY') : opts;
+});
+
+// Branded content may never be private — block the checkbox while "Only me" is selected
+// (the dropdown filter above covers the opposite order).
+const ttBrandedBlocked = computed(() => ttPrivacy.value === 'SELF_ONLY');
+watch(ttPrivacy, v => { if (v === 'SELF_ONLY') ttBranded.value = false; });
+
+// Declaration TikTok shows on the finished post — required wording, must be visible
+// before posting (Content Sharing Guidelines, "Required UX Implementation", point 3).
+const ttDisclosureLabel = computed(() => {
+  if (!ttCommercial.value) return '';
+  if (ttBranded.value)   return "Your video will be labeled as 'Paid partnership'.";
+  if (ttYourBrand.value) return "Your video will be labeled as 'Promotional content'.";
+  return '';
 });
 
 const ttCanPost = computed(() => {
@@ -1805,17 +1819,26 @@ onUnmounted(async () => {
             </label>
             <p class="text-[11px] text-gray-500 leading-snug">Turn on to disclose that this video promotes a brand, product or service.</p>
             <div v-if="ttCommercial" class="space-y-1.5 pl-1 pt-1">
-              <label class="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" v-model="ttYourBrand" /> Your Brand</label>
-              <label class="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" v-model="ttBranded" /> Branded Content</label>
-              <p v-if="!ttYourBrand && !ttBranded" class="text-[11px] text-amber-400">Select at least one.</p>
-              <p v-if="ttBranded" class="text-[11px] text-gray-500">Branded content can't be private.</p>
+              <label class="flex items-center gap-2 text-sm text-gray-200">
+                <input type="checkbox" v-model="ttYourBrand" /> Your Brand
+              </label>
+              <p class="text-[11px] text-gray-500 pl-6 -mt-1">You are promoting yourself or your own business.</p>
+              <label class="flex items-center gap-2 text-sm" :class="ttBrandedBlocked ? 'text-gray-600 cursor-not-allowed' : 'text-gray-200'">
+                <input type="checkbox" v-model="ttBranded" :disabled="ttBrandedBlocked" /> Branded Content
+              </label>
+              <p class="text-[11px] text-gray-500 pl-6 -mt-1">You are promoting another brand or a third party.</p>
+              <p v-if="ttBrandedBlocked" class="text-[11px] text-amber-400">Branded content visibility cannot be set to private.</p>
+              <p v-if="!ttYourBrand && !ttBranded" class="text-[11px] text-amber-400">You need to indicate if your content promotes yourself, a third party, or both.</p>
+              <p v-if="ttDisclosureLabel" class="text-[11px] text-gray-300 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 leading-snug">
+                {{ ttDisclosureLabel }}
+              </p>
             </div>
           </div>
 
           <!-- Consent (required) -->
           <p class="text-[11px] text-gray-500 leading-snug">
             By posting, you agree to TikTok's
-            <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" class="text-primary underline">Music Usage Confirmation</a><template v-if="ttBranded"> and <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" class="text-primary underline">Branded Content Policy</a></template>.
+            <template v-if="ttBranded"><a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" class="text-primary underline">Branded Content Policy</a> and </template><a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" class="text-primary underline">Music Usage Confirmation</a>.
           </p>
 
           <!-- Post — disabled until privacy chosen + valid disclosure -->
