@@ -398,11 +398,16 @@ const ttPrivacyLabels: Record<string, string> = {
   SELF_ONLY:             'Only me',
 };
 
-// Branded content can't be posted privately → drop SELF_ONLY when branded is on
-const ttPrivacyOptions = computed<string[]>(() => {
-  const opts: string[] = ttCreator.value?.privacy_level_options || [];
-  return ttBranded.value ? opts.filter(o => o !== 'SELF_ONLY') : opts;
-});
+// Full list from creator_info. "Only me" stays visible but is disabled while branded
+// content is on, so the reason is readable instead of the option silently vanishing.
+const ttPrivacyOptions = computed<string[]>(() => ttCreator.value?.privacy_level_options || []);
+const ttPrivateBlocked = computed(() => ttBranded.value);
+
+// Clip length vs the account's limit from creator_info — read off the preview element.
+const ttDuration = ref(0);
+const ttMaxDuration = computed<number>(() => ttCreator.value?.max_video_post_duration_sec || 0);
+const ttTooLong = computed(() =>
+  ttMaxDuration.value > 0 && ttDuration.value > 0 && ttDuration.value > ttMaxDuration.value);
 
 // Branded content may never be private — block the checkbox while "Only me" is selected
 // (the dropdown filter above covers the opposite order).
@@ -421,7 +426,19 @@ const ttDisclosureLabel = computed(() => {
 const ttCanPost = computed(() => {
   if (!ttPrivacy.value) return false;
   if (ttCommercial.value && !ttYourBrand.value && !ttBranded.value) return false;
+  if (ttTooLong.value) return false;
+  if (!description.value.trim()) return false;
   return true;
+});
+
+// Tooltip on the disabled publish button — wording from the guidelines.
+const ttPostBlockedReason = computed(() => {
+  if (ttTooLong.value) return `This video is longer than the ${ttMaxDuration.value}s your account allows.`;
+  if (!description.value.trim()) return 'Enter a caption.';
+  if (!ttPrivacy.value) return 'Select who can view this video.';
+  if (ttCommercial.value && !ttYourBrand.value && !ttBranded.value)
+    return 'You need to indicate if your content promotes yourself, a third party, or both';
+  return '';
 });
 
 async function openTikTokPostModal(mode: 'schedule' | 'now') {
@@ -433,6 +450,7 @@ async function openTikTokPostModal(mode: 'schedule' | 'now') {
   ttPrivacy.value = '';
   ttAllowComment.value = false; ttAllowDuet.value = false; ttAllowStitch.value = false;
   ttCommercial.value = false; ttYourBrand.value = false; ttBranded.value = false;
+  ttDuration.value = 0;
   ttModalOpen.value = true;
   ttLoading.value = true;
   try {
@@ -1779,13 +1797,18 @@ onUnmounted(async () => {
 
           <!-- Video preview (required: content preview) -->
           <div v-if="ttClipSrc" class="rounded-xl overflow-hidden border border-white/10 bg-black">
-            <video :src="ttClipSrc" controls class="w-full max-h-56" />
+            <video :src="ttClipSrc" controls class="w-full max-h-56"
+              @loadedmetadata="ttDuration = ($event.target as HTMLVideoElement).duration" />
           </div>
+          <p v-if="ttTooLong" class="text-[11px] text-red-400 -mt-2">
+            This video is {{ Math.round(ttDuration) }}s — your account allows a maximum of {{ ttMaxDuration }}s.
+          </p>
 
-          <!-- Caption -->
+          <!-- Caption — preset text stays editable (guideline: user control over title) -->
           <div>
-            <label class="text-[11px] uppercase tracking-wide text-gray-500">Caption</label>
-            <div class="text-sm text-gray-200 bg-dark-950/60 border border-white/10 rounded-lg px-3 py-2 whitespace-pre-wrap max-h-24 overflow-y-auto mt-1">{{ description || '—' }}</div>
+            <label class="text-[11px] uppercase tracking-wide text-gray-500">Caption <span class="text-red-400">*</span></label>
+            <textarea v-model="description" rows="3" placeholder="Write a caption…"
+              class="w-full mt-1 text-sm text-gray-200 bg-dark-950/60 border border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary/50 resize-y"></textarea>
           </div>
 
           <!-- Privacy — user must pick, NO default value -->
@@ -1793,8 +1816,13 @@ onUnmounted(async () => {
             <label class="text-[11px] uppercase tracking-wide text-gray-500">Who can view this video <span class="text-red-400">*</span></label>
             <select v-model="ttPrivacy" class="w-full mt-1 bg-dark-950/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-primary/50">
               <option value="" disabled>Select…</option>
-              <option v-for="o in ttPrivacyOptions" :key="o" :value="o">{{ ttPrivacyLabels[o] || o }}</option>
+              <option v-for="o in ttPrivacyOptions" :key="o" :value="o"
+                :disabled="o === 'SELF_ONLY' && ttPrivateBlocked"
+                :title="o === 'SELF_ONLY' && ttPrivateBlocked ? 'Branded content visibility cannot be set to private' : ''">
+                {{ ttPrivacyLabels[o] || o }}<template v-if="o === 'SELF_ONLY' && ttPrivateBlocked"> — not available for branded content</template>
+              </option>
             </select>
+            <p v-if="ttPrivateBlocked" class="text-[11px] text-amber-400 mt-1">Branded content visibility cannot be set to private.</p>
           </div>
 
           <!-- Interaction toggles — unchecked by default; greyed out if the account restricts them -->
@@ -1841,8 +1869,13 @@ onUnmounted(async () => {
             <template v-if="ttBranded"><a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" class="text-primary underline">Branded Content Policy</a> and </template><a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" class="text-primary underline">Music Usage Confirmation</a>.
           </p>
 
+          <p class="text-[11px] text-gray-500 leading-snug">
+            Posting can take a few minutes to finish processing on TikTok. You'll be notified once it's published.
+          </p>
+
           <!-- Post — disabled until privacy chosen + valid disclosure -->
           <button @click="confirmTikTokPost" :disabled="!ttCanPost || isScheduling"
+            :title="ttPostBlockedReason"
             class="w-full py-2.5 rounded-xl text-sm font-semibold transition-colors"
             :class="ttCanPost && !isScheduling ? 'bg-primary text-white hover:bg-primary/80' : 'bg-white/10 text-gray-500 cursor-not-allowed'">
             {{ isScheduling ? 'Wird gepostet…' : (ttMode === 'now' ? 'Post to TikTok' : 'Schedule TikTok post') }}
